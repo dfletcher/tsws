@@ -1,0 +1,674 @@
+#!/bin/bash
+
+# --------------------------------
+# Totally Simple Web Server (TSWS)
+# --------------------------------
+#
+#  (c) 2015 Dave Fletcher
+#  All Rights Reserved
+#
+#  This is free and unencumbered software released into the public domain.
+#
+#  Anyone is free to copy, modify, publish, use, compile, sell, or
+#  distribute this software, either in source code form or as a compiled
+#  binary, for any purpose, commercial or non-commercial, and by any
+#  means.
+#
+#  In jurisdictions that recognize copyright laws, the author or authors
+#  of this software dedicate any and all copyright interest in the
+#  software to the public domain. We make this dedication for the benefit
+#  of the public at large and to the detriment of our heirs and
+#  successors. We intend this dedication to be an overt act of
+#  relinquishment in perpetuity of all present and future rights to this
+#  software under copyright law.
+
+#  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+#  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+#  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+#  IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+#  OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+#  ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+#  OTHER DEALINGS IN THE SOFTWARE.
+#
+#  For more information, please refer to <http://unlicense.org>
+#
+
+# All informative console log messages are piped to here so e.g. it could be
+# quieted by setting TSWS_LOG=/dev/null or alternatively logged to a file.
+# The default is $(tty) which prints logs to console. TSWS_LOG may be set
+# in the environment before running the script or changed before calling the
+# tsws function.
+[ -z "${TSWS_LOG}" ] && declare TSWS_LOG="$(tty)"
+
+# -----------------------------------------------------------------------------
+# tsws [host [, port]]
+# -----------------------------------------------------------------------------
+#
+# Start the Totally Simple Web Server. Note that the `tsws` script that this
+# function lives in has the same interface as the function: tsws HOST PORT and
+# the script itself can be used in the same ways as "Example usage" below.
+#
+# ---------
+# Arguments
+# ---------
+#
+#    - host: IP address (or hostname) to listen on. Optional. If not
+#            supplied the default value is 127.0.0.1
+#
+#    - port: Port to listen on. Optional. If not supplied the default
+#            value is 18080
+#
+# -------------
+# Example usage
+# -------------
+#
+#  # Launch the webserver. This version will not return, it will loop forever.
+#  tsws localhost 8080
+#
+#  # Alternatively, launch the webserver and return immediately.
+#  tsws localhost 8080 &
+#  # Catch the PID so we can wait or kill later.
+#  declare tsws_pid=$!
+#  # Launch a browser. Don't detach, wait for exit.
+#  firefox "http://localhost:8080"
+#  # User closed the browser, we're done, stop the server.
+#  kill ${tsws_pid}
+#
+# -------------------
+# Theory of operation
+# -------------------
+#
+# The nc program opens a network port and begins listening. When an inbound
+# connection is made, the STDOUT of nc is pushed to a FIFO pipe. The
+# _tsws_response function runs concurrently and waits for input from the FIFO
+# pipe. When _tsws_response finds an HTTP request there, it processes and
+# returns a well-formed HTTP response back to nc STDIN. nc sends this
+# response back to the requesting client.
+#
+# --------------------------------------------------------------------------
+#
+#                                        +----+ (1)
+#       Browser <===> The Internet <===> | nc | ---> FIFO pipe ---+
+#                                        +----+                   |
+#                                       (0) ^                     |
+#                                           |                     |
+#                                           +-- _tsws_response <--+
+#
+#    - 1: STDOUT of `nc` process which carries HTTP requests.
+#    - 0: STDIN of `nc` process which carries HTTP responses.
+#    - _tsws_response: handler function reads requests, produces responses.
+#
+# --------------------------------------------------------------------------
+#                                               Diagram: Theory of operation
+#
+# ------------
+# Requirements
+# ------------
+#
+#   - Bash (obviously) 4.0 or later. The associative array support in Bash 4.0
+#     is needed to support maps containing CGI variables.
+#
+#   - Netcat (nc) handles the network listen call for us and binds stdin and
+#     stdout of the nc process to connected clients.
+#
+#   - mkfifo: A FIFO pipe connects the output of nc to our _tsws_response
+#     function which processes requests and sends responses back through stdin
+#     of nc to browser client.
+#
+#   - wc -c: For calculating Content-Length.
+#
+#   - cat, tee: For pushing files and HTTP data through pipes.
+#
+#   - date, uname: Just to show some dynamic content in www_index. Also date
+#     is used in logging.
+#
+#   - base64: Demonstrates script-embedded binary files.
+#
+# ---------------------
+# Known issues and bugs
+# ---------------------
+#
+#   - !GAPING SECURITY HOLE WARNING!
+#     Do not trust the input. An attempt is made to scrub requests, it may not
+#     be 100% complete (this project is brand-spankin' new). The core engine
+#     looks for bash functions named similarly to the path. These are prefixed
+#     with "www_". Think carefully when writing functions named similarly,
+#     ensure that values coming from the network cannot be evaluated.
+#
+#   - This setup almost certainly has issues with concurrency. It is useful for
+#     a single local user or demonstration purposes, but please do not use it
+#     as a production web server connected to the internet.
+#
+#   - All HTTP caching is ignored keep things simple.
+#
+#   - Cygwin doesn't work so great. Particularly, some requests just fail
+#     inexplicably with nc never supplying a request or supplying a massively
+#     delayed one.
+#
+#   - It is easily confused, especially if multiple browsers or tabs are
+#     pointed to it at the same time. Requests and responses might get dropped
+#     (still not quite sure why on that) and the order can get out of whack,
+#     sending the wrong file for a request.
+#
+#   - Iterative development is awkward. Altering functions while bash is
+#     running confuses it, and the server must be restarted to see changes.
+#
+#   - Parsing CGI variables off URLs is weak. TODO find a decent way to do it
+#     that doesn't baloon the example code.
+#
+#   - Killing the server with Ctrl-C is awkward? Needs testing.
+#
+function tsws {
+
+  local -r host="${1:-127.0.0.1}"
+  local -r port="${2:-18080}"
+  local -r fifo="$(mktemp -u)"
+
+  # Initialize the FIFO pipe.
+  mkfifo -m 600 "${fifo}"
+  trap "rm ${fifo}" EXIT INT TERM HUP # Auto-cleanup at exit.
+
+  # Connect _tsws_response to STDIN. Connect STDOUT to FIFO pipe. Then listen
+  # on ${host}:${port}. nc -l is "listen" and -k is "listen forever".
+  printf $'\ntsws HTTP/1.1' >"${TSWS_LOG}"
+  printf $' started %s' "$(date)" >"${TSWS_LOG}"
+  printf $' on %s:%s\n\n' "${host}" "${port}" >"${TSWS_LOG}"
+  nc -kl "${host}" ${port} \
+    0< <(_tsws_response "${fifo}") \
+    1> >(while : ; do cat - > "${fifo}"; done) \
+    2>"${TSWS_LOG}" # Loop ^^ keeps pipe open.
+    # Send ^^ nc errors (2>) to the log.
+}
+
+# -----------------------------------------------------------------------------
+# _tsws_response(fifo)
+# -----------------------------------------------------------------------------
+#
+# Internal workhorse function for handling requests and responses for tsws.
+# Do not call it directly.
+#
+function _tsws_response {
+  local method uri path httpvers callback content_type status msg obf clen
+  method=""
+  while : ; do # Run forever.
+    while read -r line; do
+      # Replace CRLF with \n. Strip backspaces, alert bells, and tabs.
+      line="$(sed 's/[\r\b\a\t]//g' <<< "${line}")"
+      # Sanitize. TODO this santization is probably not complete and may
+      # behave incorrectly for some URLs.
+      line="$(sed 's/[^-a-zA-Z0-9\/\.\:\?\+\*\&\=[:space:]]//g' <<< "${line}")"
+      if [ -n "${line}" ]; then
+        # ${line} is not empty, it is either a "Request-Line" or a header
+        # line. If we have no 'method' yet we assume it is a Request-Line.
+        # http://www.w3.org/Protocols/rfc2616/rfc2616-sec5.html
+        if [ -z "${method}" ]; then
+          read -r method uri httpvers <<< "${line}"
+          continue
+        fi
+        # TODO: if we cared about any of the request headers, here is the
+        # place to read them by parsing ${line}.
+      else
+        # ${line} is empty, so we received two consecutive CRLF.
+        # Process the request.
+        #
+        # Currently all "files" served up by the server are functions in this
+        # script that return content. This shows how dynamic content can be
+        # served and keeps this example all in one single file. It should be
+        # easy to adapt this to also read real files from disk Hint: obf below
+        # and use `file` to get content_type.
+        unset cgi_get
+        local -A cgi_get
+        IFS='?#' read path query fragment <<< "${uri}"
+        while read -d $'&' namevaluepair || [ -n "${namevaluepair}" ]; do
+          # Note this method of parsing CGI variables is currently really weak
+          # and ignores & that are escaped as &amp;
+          IFS=$'=' read name value <<< "${namevaluepair}"
+          # The worst possible unescaping, replace + with space.
+          value="$(sed 's/\+/ /g' <<< "${value}")"
+          cgi_get["${name}"]="${value}"
+        done <<< "${query}"
+        callback="www$(sed -e 's/\//_/g' -e 's/\./_/g' <<< "${path}")"
+        [ "${callback}" = "www_" ] && callback="www_index"
+        content_type="${callback}_Content_Type"
+        content_type="${!content_type}"
+        [ -z "${content_type}" ] && content_type="text/plain"
+        obf="$(mktemp -u)"
+        case "${method:?}" in
+          GET)
+            if local -f  "${callback}" > /dev/null; then
+              # ${callback} is a function we declared.
+              status=200; msg="OK"
+              ${callback} > "${obf}"
+            else
+              # ${callback} is not defined.
+              status=404; msg="Not Found"
+              printf $'Not found: %s.' "${path}" > "${obf}"
+            fi
+          ;;
+          *)
+            # Currently we only handle GET requests.
+            status=500; msg="Internal Server Error"
+            printf $'Server Error: unknown method %s.' "${method}" > "${obf}"
+          ;;
+        esac
+        clen=$(cat "${obf}"|wc -c)
+        # Log the request.
+        printf $'%s %s' "${method}" "${path} $(date); " >"${TSWS_LOG}"
+        # Output headers, tee shows the response headers in log.
+        printf $'HTTP/1.1 %s %s\r\n' "${status:?}" "${msg:?}" | tee "${TSWS_LOG}"
+        printf $'Content-Length: %s\r\n' "${clen}" | tee "${TSWS_LOG}"
+        printf $'Content-Type: %s\r\n' "${content_type}" | tee "${TSWS_LOG}"
+        printf $'Connection: close\r\n' | tee "${TSWS_LOG}"
+        printf $'\r\n' | tee "${TSWS_LOG}"
+        # Output the response data.
+        cat "${obf}"
+        # This is meant to clean up a temporary file so if you alter the code
+        # to handle real files don't let this accidentally delete it!
+        rm "${obf}"
+        # Reset for the next loop iteration.
+        method=""
+      fi
+    done < "$1"
+  done
+}
+
+
+# +---------------------------------------------------------------------------+
+# |                                  WWW FILES                                |
+# +---------------------------------------------------------------------------+
+
+declare www_index_Content_Type="text/html; charset=utf-8"
+function www_index {
+# Note here we use <<EOF *without* the backslash, we want Bash to interpret
+# variables and subcommands in this text.
+cat <<EOF
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>TSWS, A Totally Simple Web Server</title>
+    <!--script src="//ajax.googleapis.com/ajax/libs/jquery/1.11.3/jquery.min.js"></script-->
+    <script type="text/javascript" src="/site.js"></script>
+    <style type="text/css">@import url("/style.css");</style>
+  </head>
+  <body>
+    <h1>TSWS, A Totally Simple Web Server</h1>
+    <img class="graphic" src="/graphic.jpg" />
+    <b>&copy; 2015 Dave Fletcher</b><br>
+    All rights reserved</em><br>
+    <p><em>A web server in <a href="https://www.gnu.org/software/bash/">Bash</a> and <a href="http://nc110.sourceforge.net/">Netcat</a>.</em></p>
+    <table>
+      <tr>
+        <td class="th">Generated by</td>
+        <td>$(uname -a)</td>
+      </tr>
+      <tr>
+        <td class="th">On</td>
+        <td>$(date)</td>
+      </tr>
+      <tr>
+        <td class="th">Version</td>
+        <td>${httpvers}</td>
+      </tr>
+      <tr>
+        <td class="th">Status</td>
+        <td>${status} ${msg}</td>
+      </tr>
+      <tr>
+        <td class="th">Method</td>
+        <td>${method}</td>
+      </tr>
+      <tr>
+        <td class="th">Path</td>
+        <td>${path}</td>
+      </tr>
+      <tr>
+        <td class="th">Callback</td>
+        <td>${callback}</td>
+      </tr>
+    </table>
+    $(if [ ${#cgi_get[@]} -gt 0 ]; then
+      echo $'<h3>CGI GET vars:</H3>\n<table>'
+      for name in "${!cgi_get[@]}"; do
+        echo "<tr><td class="th">${name}</td><td>${cgi_get["${name}"]}</td></tr>"
+      done
+      echo "</table>"
+    else
+      echo "<p><a href='/?a=123&b=test+123&c=xyz#fragmentjumpythingy'>Test CGI GET vars</a></p>"
+    fi)
+    <a href="https://gist.github.com/dfletcher/4763be3295bd5638b797" title="Fork me on GitHub"><img style="position: absolute; top: 0; right: 0; border: 0;" src="https://camo.githubusercontent.com/e7bbb0521b397edbd5fe43e7f760759336b5e05f/68747470733a2f2f73332e616d617a6f6e6177732e636f6d2f6769746875622f726962626f6e732f666f726b6d655f72696768745f677265656e5f3030373230302e706e67" alt="Fork me on GitHub" data-canonical-src="https://s3.amazonaws.com/github/ribbons/forkme_right_green_007200.png"></a>
+  </body>
+</html>
+EOF
+}
+
+declare www_style_css_Content_Type="text/css"
+function www_style_css {
+# Use <<\EOF for raw output with no Bash interpretation of the value.
+cat <<\EOF
+
+@import url(//fonts.googleapis.com/css?family=Lato:400,700,400italic);
+
+BODY {
+  font-family: 'Lato', sans-serif;
+  margin: 10%;
+}
+
+A, A:visited {
+  color: #060;
+  text-decoration: none;
+}
+
+A:active, A:hover {
+  color: #393;
+  text-decoration: underline;
+}
+
+TABLE {
+  font-size: smaller;
+  border: 0;
+}
+
+TD {
+  vertical-align: top;
+}
+
+.th {
+  font-weight: bold;
+  white-space: nowrap;
+  padding-right: 1em;
+  text-align: right;
+}
+
+.graphic {
+  float: right;
+  margin-left: 2em;
+  position: relative;
+  top: -2em;
+  z-index: -1;
+}
+
+EOF
+}
+
+declare www_site_js_Content_Type="text/javascript"
+function www_site_js {
+# Use <<\EOF for raw output with no Bash interpretation of the value.
+cat <<\EOF
+/*(function ($) {
+  $(document).ready(function() { alert('hi!'); });
+}(jQuery));*/
+EOF
+}
+
+declare www_graphic_jpg_Content_Type="image/jpeg"
+function www_graphic_jpg {
+# Note: The base64 here is is just to show how a binary file could be
+# returned from a Bash function. As a different type of example, this could
+# be the output of ImageMagick instead of a hard-coded base64 jpeg.
+#
+# Use <<\EOF for raw output with no Bash interpretation of the value.
+base64 -d <<\EOF
+/9j/4AAQSkZJRgABAQEASABIAAD/2wBDABALDA4MChAODQ4SERATGCgaGBYWGDEjJR0oOjM9PDkz
+ODdASFxOQERXRTc4UG1RV19iZ2hnPk1xeXBkeFxlZ2P/2wBDARESEhgVGC8aGi9jQjhCY2NjY2Nj
+Y2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2P/wAARCAFvAUoDAREA
+AhEBAxEB/8QAGwABAAIDAQEAAAAAAAAAAAAAAAECAwQFBgf/xAA9EAABAwIEBAMFBwMDBAMAAAAB
+AAIDBBEFEiExE0FRYQYicRQyUoGRFSNCYqGx0TNywSRDgiWS4fFjsvD/xAAaAQEAAwEBAQAAAAAA
+AAAAAAAAAQIDBAUG/8QAKxEBAAICAgIBBAEFAAMBAAAAAAECAxEhMQQSQRMiMlFhBRQjQnEzUoGR
+/9oADAMBAAIRAxEAPwD6AgICAgICAgICAgICAgICAgICAgICAghAQEEoCAgICAgICAgICAgICAgI
+CAgICAgICAgICAgICAgICAgICCEAkBBUutuQ0IKGaMfiJQV40R6oJytdqyRzT6/ygo6aWn1mbmj+
+NvL1CDYY9sjQ5hBadiEFkBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQQgxyyhml9f2Q
+cyvxiCiiL3PA7ncoOEcbmq7uBMbOXxH+FEphrvri534nnuSVSbRHa0RM9KiefdsL/UCyr9Sq3pZt
+U+KTRPGYvb2deymLwiaTD0FFiQmaBJzWkTtRSV5wyrY9p/0kxsR8B6qUOlNMI2ggsHdzrBBriokf
+7r7/ANkRI+qC2afrL/2NQY5Kmpi1yZx0dGR+ougpDjdI+YQzO4ErtAHnRx7FB0hqglAQEBAQEBAQ
+EBAQEBAQEBAQEBAQEBAQEBAQEGOaQRRlx+SDg4tiTKSmfNIb9BzJ6IPHDj4lUe0VJNifK0fsFEzq
+ExG2+3hRj7wFwbuxmw9SsZv/ADqHRXFMvQeH20dfDJkgMT4iA4HW/e6tSKzG4Z5Pes6mXYNBGBo0
+fRaM9tebDYXjVg+irNYntMWmOnPdROpJLxm7L7dFTU1nhbftGpbc7faMOkidqQLhbKIw14NHG51i
+8aZjqVx5cmSLaqvEV1tvNEz+oHU6JGPLbudEzWOmURge/Ib+q1jDHzMq+ybxj8Z+qvGOIRthqaKl
+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
+AgICCUBAQEBAQEBB/9k=
+EOF
+}
+
+
+# +---------------------------------------------------------------------------+
+# |                                    Main                                   |
+# +---------------------------------------------------------------------------+
+
+# You can use this script in library mode:
+#
+#   TSWS_LIBRARY=1 . "/path/to/tsws"
+#   declare www_index_Content_Type="text/html; charset=utf-8"
+#   function www_index {
+#     echo "<html><body>My index is better than the default.</body></html>"
+#   }
+#   tsws 192.168.0.55 8080
+#
+# Setting TSWS_LIBRARY=1 will load all the functions but not start the server.
+#
+[ "${TSWS_LIBRARY}" = "1" ] && return 0
+
+declare host="${1:-127.0.0.1}"
+declare port="${2:-18080}"
+tsws "${host}" "${port}"
