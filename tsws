@@ -193,7 +193,7 @@ function _tsws_response {
   while : ; do # Run forever.
     while read -r line; do
       # Replace CRLF with \n. Strip backspaces, alert bells, and tabs.
-      line="$(sed 's/[\r\b\a\t]//g' <<< "${line}")"
+      line="$(sed $'s/[\r\b\a\t]//g' <<< "${line}")"
       # Sanitize. TODO this santization is probably not complete and may
       # behave incorrectly for some URLs.
       line="$(sed 's/[^-a-zA-Z0-9\/\.\:\?\+\*\&\=[:space:]]//g' <<< "${line}")"
@@ -234,7 +234,7 @@ function _tsws_response {
         [ -z "${content_type}" ] && content_type="text/plain"
         obf="$(mktemp -u)"
         case "${method:?}" in
-          GET)
+          GET|HEAD)
             if local -f  "${callback}" > /dev/null; then
               # ${callback} is a function we declared.
               status=200; msg="OK"
@@ -261,7 +261,7 @@ function _tsws_response {
         printf $'Connection: close\r\n' | tee "${TSWS_LOG}"
         printf $'\r\n' | tee "${TSWS_LOG}"
         # Output the response data.
-        cat "${obf}"
+        [ "${method}" != "HEAD" ] && cat "${obf}"
         # This is meant to clean up a temporary file so if you alter the code
         # to handle real files don't let this accidentally delete it!
         rm "${obf}"
