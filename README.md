@@ -17,4 +17,4 @@ TSWS, A Totally Simple Web Server in [Bash](https://www.gnu.org/software/bash/) 
     }
     tsws 127.0.0.1 8080
 
-View the tsws file in a text editor for many more details and discussion, including theory of opreation and creating dynamic content.
+Have a look at [the source code](https://github.com/dfletcher/tsws/blob/master/tsws) for many more details and discussion, including theory of opreation and creating dynamic content.

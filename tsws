@@ -166,7 +166,7 @@ function tsws {
 
   # Initialize the FIFO pipe.
   mkfifo -m 600 "${fifo}"
-  trap "rm ${fifo}" EXIT INT TERM HUP # Auto-cleanup at exit.
+  trap "[ -f \"${fifo}\" ] && rm \"${fifo}\"" EXIT INT TERM HUP # Auto-cleanup.
 
   # Connect _tsws_response to STDIN. Connect STDOUT to FIFO pipe. Then listen
   # on ${host}:${port}. nc -l is "listen" and -k is "listen forever".
@@ -215,7 +215,8 @@ function _tsws_response {
         # script that return content. This shows how dynamic content can be
         # served and keeps this example all in one single file. It should be
         # easy to adapt this to also read real files from disk Hint: obf below
-        # and use `file` to get content_type.
+        # and use `file` to get content_type. TODO have a TSWS_ROOT var and
+        # support filesystem files, does not complicate this much.
         unset cgi_get
         local -A cgi_get
         IFS='?#' read path query fragment <<< "${uri}"
