@@ -174,7 +174,7 @@ function tsws {
   printf $' started %s' "$(date)" >"${TSWS_LOG}"
   printf $' on %s:%s\n\n' "${host}" "${port}" >"${TSWS_LOG}"
   nc -kl "${host}" ${port} \
-    0< <(_tsws_response "${fifo}") \
+    0< <(while : ; do _tsws_response "${fifo}"; done) \
     1> >(while : ; do cat - > "${fifo}"; done) \
     2>"${TSWS_LOG}" # Loop ^^ keeps pipe open.
     # Send ^^ nc errors (2>) to the log.
@@ -190,87 +190,85 @@ function tsws {
 function _tsws_response {
   local method uri path httpvers callback content_type status msg obf clen
   method=""
-  while : ; do # Run forever.
-    while read -r line; do
-      # Replace CRLF with \n. Strip backspaces, alert bells, and tabs.
-      line="$(sed $'s/[\r\b\a\t]//g' <<< "${line}")"
-      # Sanitize. TODO this santization is probably not complete and may
-      # behave incorrectly for some URLs.
-      line="$(sed 's/[^-a-zA-Z0-9\/\.\:\?\+\*\&\=[:space:]]//g' <<< "${line}")"
-      if [ -n "${line}" ]; then
-        # ${line} is not empty, it is either a "Request-Line" or a header
-        # line. If we have no 'method' yet we assume it is a Request-Line.
-        # http://www.w3.org/Protocols/rfc2616/rfc2616-sec5.html
-        if [ -z "${method}" ]; then
-          read -r method uri httpvers <<< "${line}"
-          continue
-        fi
-        # TODO: if we cared about any of the request headers, here is the
-        # place to read them by parsing ${line}.
-      else
-        # ${line} is empty, so we received two consecutive CRLF.
-        # Process the request.
-        #
-        # Currently all "files" served up by the server are functions in this
-        # script that return content. This shows how dynamic content can be
-        # served and keeps this example all in one single file. It should be
-        # easy to adapt this to also read real files from disk Hint: obf below
-        # and use `file` to get content_type. TODO have a TSWS_ROOT var and
-        # support filesystem files, does not complicate this much.
-        unset cgi_get
-        local -A cgi_get
-        IFS='?#' read path query fragment <<< "${uri}"
-        while read -d $'&' namevaluepair || [ -n "${namevaluepair}" ]; do
-          # Note this method of parsing CGI variables is currently really weak
-          # and ignores & that are escaped as &amp;
-          IFS=$'=' read name value <<< "${namevaluepair}"
-          # The worst possible unescaping, replace + with space.
-          value="$(sed 's/\+/ /g' <<< "${value}")"
-          cgi_get["${name}"]="${value}"
-        done <<< "${query}"
-        callback="www$(sed -e 's/\//_/g' -e 's/\./_/g' <<< "${path}")"
-        [ "${callback}" = "www_" ] && callback="www_index"
-        content_type="${callback}_Content_Type"
-        content_type="${!content_type}"
-        [ -z "${content_type}" ] && content_type="text/plain"
-        obf="$(mktemp -u)"
-        case "${method:?}" in
-          GET|HEAD)
-            if local -f  "${callback}" > /dev/null; then
-              # ${callback} is a function we declared.
-              status=200; msg="OK"
-              ${callback} > "${obf}"
-            else
-              # ${callback} is not defined.
-              status=404; msg="Not Found"
-              printf $'Not found: %s.' "${path}" > "${obf}"
-            fi
-          ;;
-          *)
-            # Currently we only handle GET requests.
-            status=500; msg="Internal Server Error"
-            printf $'Server Error: unknown method %s.' "${method}" > "${obf}"
-          ;;
-        esac
-        clen=$(cat "${obf}"|wc -c)
-        # Log the request.
-        printf $'%s %s' "${method}" "${path} $(date); " >"${TSWS_LOG}"
-        # Output headers, tee shows the response headers in log.
-        printf $'HTTP/1.1 %s %s\r\n' "${status:?}" "${msg:?}" | tee "${TSWS_LOG}"
-        printf $'Content-Length: %s\r\n' "${clen}" | tee "${TSWS_LOG}"
-        printf $'Content-Type: %s\r\n' "${content_type}" | tee "${TSWS_LOG}"
-        printf $'Connection: close\r\n' | tee "${TSWS_LOG}"
-        printf $'\r\n' | tee "${TSWS_LOG}"
-        # Output the response data.
-        [ "${method}" != "HEAD" ] && cat "${obf}"
-        # This is meant to clean up a temporary file so if you alter the code
-        # to handle real files don't let this accidentally delete it!
-        rm "${obf}"
-        # Reset for the next loop iteration.
-        method=""
+  while read -r line; do
+    # Replace CRLF with \n. Strip backspaces, alert bells, and tabs.
+    line="$(sed $'s/[\r\b\a\t]//g' <<< "${line}")"
+    # Sanitize. TODO this santization is probably not complete and may
+    # behave incorrectly for some URLs.
+    line="$(sed 's/[^-a-zA-Z0-9\/\.\:\?\+\*\&\=[:space:]]//g' <<< "${line}")"
+    if [ -n "${line}" ]; then
+      # ${line} is not empty, it is either a "Request-Line" or a header
+      # line. If we have no 'method' yet we assume it is a Request-Line.
+      # http://www.w3.org/Protocols/rfc2616/rfc2616-sec5.html
+      if [ -z "${method}" ]; then
+        read -r method uri httpvers <<< "${line}"
+        continue
       fi
-    done < "$1"
-  done
+      # TODO: if we cared about any of the request headers, here is the
+      # place to read them by parsing ${line}.
+    else
+      # ${line} is empty, so we received two consecutive CRLF.
+      # Process the request.
+      #
+      # Currently all "files" served up by the server are functions in this
+      # script that return content. This shows how dynamic content can be
+      # served and keeps this example all in one single file. It should be
+      # easy to adapt this to also read real files from disk Hint: obf below
+      # and use `file` to get content_type. TODO have a TSWS_ROOT var and
+      # support filesystem files, does not complicate this much.
+      unset cgi_get
+      local -A cgi_get
+      IFS='?#' read path query fragment <<< "${uri}"
+      while read -d $'&' namevaluepair || [ -n "${namevaluepair}" ]; do
+        # Note this method of parsing CGI variables is currently really weak
+        # and ignores & that are escaped as &amp;
+        IFS=$'=' read name value <<< "${namevaluepair}"
+        # The worst possible unescaping, replace + with space.
+        value="$(sed 's/\+/ /g' <<< "${value}")"
+        cgi_get["${name}"]="${value}"
+      done <<< "${query}"
+      callback="www$(sed -e 's/\//_/g' -e 's/\./_/g' <<< "${path}")"
+      [ "${callback}" = "www_" ] && callback="www_index"
+      content_type="${callback}_Content_Type"
+      content_type="${!content_type}"
+      [ -z "${content_type}" ] && content_type="text/plain"
+      obf="$(mktemp -u)"
+      case "${method:?}" in
+        GET|HEAD)
+          if local -f  "${callback}" > /dev/null; then
+            # ${callback} is a function we declared.
+            status=200; msg="OK"
+            ${callback} > "${obf}"
+          else
+            # ${callback} is not defined.
+            status=404; msg="Not Found"
+            printf $'Not found: %s.' "${path}" > "${obf}"
+          fi
+        ;;
+        *)
+          # Currently we only handle GET requests.
+          status=500; msg="Internal Server Error"
+          printf $'Server Error: unknown method %s.' "${method}" > "${obf}"
+        ;;
+      esac
+      clen=$(cat "${obf}"|wc -c)
+      # Log the request.
+      printf $'%s %s' "${method}" "${path} $(date); " >"${TSWS_LOG}"
+      # Output headers, tee shows the response headers in log.
+      printf $'HTTP/1.1 %s %s\r\n' "${status:?}" "${msg:?}" | tee "${TSWS_LOG}"
+      printf $'Content-Length: %s\r\n' "${clen}" | tee "${TSWS_LOG}"
+      printf $'Content-Type: %s\r\n' "${content_type}" | tee "${TSWS_LOG}"
+      printf $'Connection: close\r\n' | tee "${TSWS_LOG}"
+      printf $'\r\n' | tee "${TSWS_LOG}"
+      # Output the response data.
+      [ "${method}" != "HEAD" ] && cat "${obf}"
+      # This is meant to clean up a temporary file so if you alter the code
+      # to handle real files don't let this accidentally delete it!
+      rm "${obf}"
+      # Reset for the next loop iteration.
+      method=""
+    fi
+  done < "$1"
 }
 
 
