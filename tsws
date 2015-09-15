@@ -162,22 +162,37 @@ function tsws {
 
   local -r host="${1:-127.0.0.1}"
   local -r port="${2:-18080}"
-  local -r fifo="$(mktemp -u)"
+  local -r _socat=$(which socat)
+  local -r _nc=$(which nc)
 
-  # Initialize the FIFO pipe.
-  mkfifo -m 600 "${fifo}"
-  trap "[ -f \"${fifo}\" ] && rm \"${fifo}\"" EXIT INT TERM HUP # Auto-cleanup.
+  if [ -x "${_socat}" ] || [ -x "${_nc}" ]; then
+    printf $'\ntsws HTTP/1.1' >"${TSWS_LOG}"
+    printf $' started %s' "$(date)" >"${TSWS_LOG}"
+    printf $' on %s:%s\n\n' "${host}" "${port}" >"${TSWS_LOG}"
+  fi
 
-  # Connect _tsws_response to STDIN. Connect STDOUT to FIFO pipe. Then listen
-  # on ${host}:${port}. nc -l is "listen" and -k is "listen forever".
-  printf $'\ntsws HTTP/1.1' >"${TSWS_LOG}"
-  printf $' started %s' "$(date)" >"${TSWS_LOG}"
-  printf $' on %s:%s\n\n' "${host}" "${port}" >"${TSWS_LOG}"
-  nc -kl "${host}" ${port} \
-    0< <(while : ; do _tsws_response "${fifo}"; done) \
-    1> >(while : ; do cat - > "${fifo}"; done) \
-    2>"${TSWS_LOG}" # Loop ^^ keeps pipe open.
-    # Send ^^ nc errors (2>) to the log.
+  if [ -x "${_socat}" ]; then
+    # TODO document socat operation and recommend preferring it over nc.
+    local -r _bash=$(which bash)
+    "${_socat}" \
+      "TCP-LISTEN:${port},bind=${host},fork" \
+      "SYSTEM:TSWS_RESPONSE=1 TSWS_LOG=${TSWS_LOG} $0"
+  elif [ -x "${_nc}" ]; then
+    # Initialize the FIFO pipe.
+    local -r fifo="$(mktemp -u)"
+    mkfifo -m 600 "${fifo}"
+    trap "[ -f \"${fifo}\" ] && rm \"${fifo}\"" EXIT INT TERM HUP # Cleanup.
+    # Connect _tsws_response to STDIN. Connect STDOUT to FIFO pipe. Then listen
+    # on ${host}:${port}. nc -l is "listen" and -k is "listen forever".
+    "${_nc}" -kl "${host}" ${port} \
+      0< <(while : ; do _tsws_response 0< "${fifo}"; done) \
+      1> >(while : ; do cat - > "${fifo}"; done) \
+      2>"${TSWS_LOG}" # Loop ^^ keeps pipe open.
+      # Send ^^ nc errors (2>) to the log.
+  else
+    printf $'\nCannot find "socat" or "nc", cannot continue.' >"${TSWS_LOG}"
+    exit 1
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -268,7 +283,7 @@ function _tsws_response {
       # Reset for the next loop iteration.
       method=""
     fi
-  done < "$1"
+  done
 }
 
 
@@ -664,10 +679,21 @@ EOF
 #   }
 #   tsws 192.168.0.55 8080
 #
+
 # Setting TSWS_LIBRARY=1 will load all the functions but not start the server.
-#
 [ "${TSWS_LIBRARY}" = "1" ] && return 0
 
+# Setting TSWS_RESPONSE=1 will run the script in response mode, handle one
+# connection on stdin/stdout and then exit.
+
+# TODO: now there is 3 modes. Run the server, source as a library, run the
+# response handler separately (for socat). Maybe do --mode=[httpd|lib|request]
+
+if [ "${TSWS_RESPONSE}" = "1" ]; then
+  while : ; do _tsws_response || break; done
+  exit $?
+fi
 declare host="${1:-127.0.0.1}"
 declare port="${2:-18080}"
 tsws "${host}" "${port}"
+
