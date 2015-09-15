@@ -154,7 +154,7 @@ function tsws {
 # Do not call it directly.
 #
 function _tsws_response {
-  local method uri path httpvers callback content_type status msg obf clen
+  local method uri path httpvers callback content_type status msg obf clen abs
   method=""
   while read -r line; do
     # Replace CRLF with \n. Strip backspaces, alert bells, and tabs.
@@ -193,10 +193,16 @@ function _tsws_response {
         value="$(sed 's/\+/ /g' <<< "${value}")"
         cgi_get["${name}"]="${value}"
       done <<< "${query}"
-      callback="www$(sed -e 's/\//_/g' -e 's/\./_/g' <<< "${path}")"
-      [ "${callback}" = "www_" ] && callback="www_index"
-      content_type="${callback}_Content_Type"
-      content_type="${!content_type}"
+      abs="${TSWS_ROOT}/${uri}"
+      if [ -d "${TSWS_ROOT}" ] && [ -f "${abs}" ]; then
+        callback="_tsws_file"
+        content_type="$(file -ib "${abs}")"
+      else
+        callback="www$(sed -e 's/\//_/g' -e 's/\./_/g' <<< "${path}")"
+        [ "${callback}" = "www_" ] && callback="www_index"
+        content_type="${callback}_Content_Type"
+        content_type="${!content_type}"
+      fi
       [ -z "${content_type}" ] && content_type="text/plain"
       obf="$(mktemp -u)"
       case "${method:?}" in
@@ -237,6 +243,17 @@ function _tsws_response {
   done < "$1"
 }
 
+# -----------------------------------------------------------------------------
+# _tsws_file()
+# -----------------------------------------------------------------------------
+#
+# File server function. If TSWS_ROOT was defined as a valid directory and the
+# request points to an existing file, the abs variable is set and this function
+# is called to supply the content.
+#
+function _tsws_file {
+  cat "${abs:?}"
+}
 
 # +---------------------------------------------------------------------------+
 # |                                  WWW FILES                                |
