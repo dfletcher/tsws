@@ -29,7 +29,7 @@ a loop to emulate the operation:
 This will not work well on Cygwin or other Windows based Bash distributions, the
 delay of launching an executable will cause too much downtime, the browser will
 often be trying to connect while this is looping and will get no response
-because it's looping around to the front of this loop.
+because it is not listening for connections for an extended period of time.
 
 ## You can use TSWS as a library:
 
