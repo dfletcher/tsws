@@ -54,5 +54,3 @@ creating dynamic content.
 - Parsing CGI variables off URLs is weak. TODO find a decent way to do it
   that doesn't baloon the example code.
 
-- Killing the server with Ctrl-C is awkward? Needs testing.
-
