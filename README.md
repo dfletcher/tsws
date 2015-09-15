@@ -55,24 +55,24 @@ creating dynamic content.
   with "www_". Think carefully when writing functions named similarly,
   ensure that values coming from the network cannot be evaluated.
 
-- This setup almost certainly has issues with concurrency. It is useful for
-  a single local user or demonstration purposes, but please do not use it
-  as a production web server connected to the internet.
-
 - All HTTP caching is ignored keep things simple.
 
-- Cygwin doesn't work so great. Particularly, some requests just fail
-  inexplicably with nc never supplying a request or supplying a massively
-  delayed one.
-
-- It is easily confused, especially if multiple browsers or tabs are
-  pointed to it at the same time. Requests and responses might get dropped
-  (still not quite sure why on that) and the order can get out of whack,
-  sending the wrong file for a request.
+- Parsing CGI variables off URLs is weak. TODO find a decent way to do it
+  that doesn't baloon the example code.
 
 - Iterative development is awkward. Altering functions while bash is
   running confuses it, and the server must be restarted to see changes.
 
-- Parsing CGI variables off URLs is weak. TODO find a decent way to do it
-  that doesn't baloon the example code.
+- (Netcat only) this setup almost certainly has issues with concurrency. It is
+  useful for a single local user or demonstration purposes, but please do not
+  use it with Netcat in any kind of production web server connected to the
+  internet.
+
+- (Netcat only) Cygwin doesn't work so great. Particularly, some requests just
+  fail inexplicably with nc never supplying a request or supplying a massively
+  delayed one.
+
+- (Netcat only) It is easily confused, especially if multiple browsers or tabs
+  are pointed to it at the same time. Requests might get dropped and the order
+  can get out of whack, sending the wrong file for a request.
 
