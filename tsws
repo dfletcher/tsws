@@ -48,6 +48,9 @@
 # function lives in has the same interface as the function: tsws HOST PORT and
 # the script itself can be used in the same ways as "Example usage" below.
 #
+# This function can use either socat or nc as a network backend. Socat is
+# preferred.
+#
 # ---------
 # Arguments
 # ---------
@@ -74,9 +77,36 @@
 #  # User closed the browser, we're done, stop the server.
 #  kill ${tsws_pid}
 #
-# -------------------
-# Theory of operation
-# -------------------
+# --------------------------------
+# Theory of operation - socat mode
+# --------------------------------
+#
+# The socat program opens a network port and begins listening. When an inbound
+# connection is made, socat will call system() and invoke our script, passing
+# HTTP requests to STDIN and the script will provide responses on STDOUT.
+#
+# --------------------------------------------------------------------------
+#
+#                                 (L) +-------+ (S) (1)
+#    Browser <===> The Internet <===> | socat |--------------------------+
+#                                     +-------+                          |
+#                                    (0) ^                               |
+#                                        |                               |
+#                                        +--- TSWS_RESPONSE=1 ./tsws <---+
+#
+#    - 1: STDOUT of `socat` process which carries HTTP requests.
+#    - 0: STDIN of `socat` process which carries HTTP responses.
+#    - TSWS_RESPONSE=1 ./tsws: call this script in response mode, it
+#      invokes _tsws_response in a forever loop.
+#    - L: Socat TCP-LISTEN option.
+#    - S: Socat SYSTEM option.
+#
+# --------------------------------------------------------------------------
+#                                  Diagram: Theory of operation - socat mode
+#
+# -----------------------------
+# Theory of operation - nc mode
+# -----------------------------
 #
 # The nc program opens a network port and begins listening. When an inbound
 # connection is made, the STDOUT of nc is pushed to a FIFO pipe. The
@@ -99,7 +129,7 @@
 #    - _tsws_response: handler function reads requests, produces responses.
 #
 # --------------------------------------------------------------------------
-#                                               Diagram: Theory of operation
+#                                     Diagram: Theory of operation - nc mode
 #
 # ------------
 # Requirements
@@ -108,8 +138,11 @@
 #   - Bash (obviously) 4.0 or later. The associative array support in Bash 4.0
 #     is needed to support maps containing CGI variables.
 #
-#   - Netcat (nc) handles the network listen call for us and binds stdin and
-#     stdout of the nc process to connected clients.
+#   - Socat (socat) [RECOMMENDED] handles the network listen call for us and
+#     binds stdin and stdout of the nc process to connected clients.
+#
+#   - Netcat (nc) [ALTERNATE] handles the network listen call for us and binds
+#     stdin and stdout of the nc process to connected clients.
 #
 #   - mkfifo: A FIFO pipe connects the output of nc to our _tsws_response
 #     function which processes requests and sends responses back through stdin
@@ -158,6 +191,8 @@
 #
 #   - Killing the server with Ctrl-C is awkward? Needs testing.
 #
+#   - There should be a way to force `nc` mode even when socat is present.
+#
 function tsws {
 
   local -r host="${1:-127.0.0.1}"
@@ -196,7 +231,7 @@ function tsws {
 }
 
 # -----------------------------------------------------------------------------
-# _tsws_response(fifo)
+# _tsws_response()
 # -----------------------------------------------------------------------------
 #
 # Internal workhorse function for handling requests and responses for tsws.
@@ -685,9 +720,6 @@ EOF
 
 # Setting TSWS_RESPONSE=1 will run the script in response mode, handle one
 # connection on stdin/stdout and then exit.
-
-# TODO: now there is 3 modes. Run the server, source as a library, run the
-# response handler separately (for socat). Maybe do --mode=[httpd|lib|request]
 
 if [ "${TSWS_RESPONSE}" = "1" ]; then
   while : ; do _tsws_response || break; done
