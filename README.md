@@ -1,15 +1,16 @@
 # tsws
+
 TSWS, A Totally Simple Web Server in [Bash](https://www.gnu.org/software/bash/)
 and [Netcat](http://nc110.sourceforge.net/).
 
-## Getting Started
+### Getting Started
 
     git clone https://github.com/dfletcher/tsws.git
     cd tsws
     ./tsws 127.0.0.1 8080 &
     chromium http://127.0.0.1:8080
 
-## You can use TSWS as a library:
+### You can use TSWS as a library:
 
     TSWS_LIBRARY=1 . tsws
     declare www_index_Content_Type="text/html; charset=utf-8"
@@ -20,10 +21,10 @@ and [Netcat](http://nc110.sourceforge.net/).
 
 Have a look at
 [the source code](https://github.com/dfletcher/tsws/blob/master/tsws)
-for many more details and discussion, including theory of operation and creating
-dynamic content.
+for many more details and discussion, including theory of operation and
+creating dynamic content.
 
-# Known issues and bugs
+### Known issues and bugs
 
 - !GAPING SECURITY HOLE WARNING!
   Do not trust the input. An attempt is made to scrub requests, it may not
