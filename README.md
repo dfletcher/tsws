@@ -18,7 +18,7 @@ correct operation on the Cygwin platform. The script first checks for `socat`
 and uses that if available. If not, it checks for `nc` and uses that as a
 fallback solution.
 
-### If you cannot install Socat
+#### If you cannot install Socat
 
 There are a lot of variations of the `nc` program around and it might not work.
 If `nc` complains about a missing -k option, you could try calling the script in
