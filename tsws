@@ -171,7 +171,6 @@ function tsws {
   fi
 
   if [ -x "${_socat}" ]; then
-    # TODO document socat operation and recommend preferring it over nc.
     local -r _bash=$(which bash)
     "${_socat}" \
       "TCP-LISTEN:${port},bind=${host},fork" \
