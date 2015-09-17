@@ -157,6 +157,7 @@ function _tsws_response {
   local method uri path httpvers callback content_type status msg obf clen abs
   method=""
   while read -r line; do
+    status=""
     # Replace CRLF with \n. Strip backspaces, alert bells, and tabs.
     line="$(sed $'s/[\r\b\a\t]//g' <<< "${line}")"
     # Sanitize. TODO this santization is probably not complete and may
@@ -194,31 +195,45 @@ function _tsws_response {
         cgi_get["${name}"]="${value}"
       done <<< "${query}"
       abs="${TSWS_ROOT}/${uri}"
-      if [ -d "${TSWS_ROOT}" ] && [ -f "${abs}" ]; then
-        callback="_tsws_file"
-        content_type="$(file -ib "${abs}")"
-      else
-        callback="www$(sed -e 's/\//_/g' -e 's/\./_/g' <<< "${path}")"
-        [ "${callback}" = "www_" ] && callback="www_index"
-        content_type="${callback}_Content_Type"
-        content_type="${!content_type}"
-      fi
-      [ -z "${content_type}" ] && content_type="text/plain"
       obf="$(mktemp -u)"
+      [ -z "${content_type}" ] && content_type="text/plain"
       case "${method:?}" in
         GET|HEAD)
+          if [ -d "${TSWS_ROOT}" ] && [ -f "${abs}" ]; then
+            # TSWS_ROOT is defined and the calculated path exists.
+            # First test if the path is inside TSWS_ROOT.
+            local dir="$(dirname "${abs}")"
+            local actualdir="$(cd -- "${dir}" && pwd)"
+            if grep "^${TSWS_ROOT}" <<< "${actualdir}" >/dev/null; then
+              # Yes, the file is inside TSWS_ROOT, serve it up.
+              callback="_tsws_file"
+              content_type="$(file -ib "${abs}")"
+            else
+              # Client is doing something funky with paths, we can't confirm
+              # that the requested file is inside TSWS_ROOT.
+              status=500; msg="Internal Server Error"
+              printf $'Path is outside web root: %s dir=%s actual=%s' "${uri}" "${dir}" "${actualdir}" > "${obf}"
+            fi
+          else
+            # If the file does not exist we go into dynamic callback mode.
+            # Calculate a function name.
+            callback="www$(sed -e 's/\//_/g' -e 's/\./_/g' <<< "${path}")"
+            [ "${callback}" = "www_" ] && callback="www_index"
+            content_type="${callback}_Content_Type"
+            content_type="${!content_type}"
+          fi
           if local -f  "${callback}" > /dev/null; then
             # ${callback} is a function we declared.
             status=200; msg="OK"
             ${callback} > "${obf}"
-          else
-            # ${callback} is not defined.
+          elif [ -z "${status}" ]; then
+            # ${callback} is not defined and it is not a file, 404.
             status=404; msg="Not Found"
             printf $'Not found: %s.' "${path}" > "${obf}"
           fi
         ;;
         *)
-          # Currently we only handle GET requests.
+          # Currently we only handle GET and HEAD requests.
           status=500; msg="Internal Server Error"
           printf $'Server Error: unknown method %s.' "${method}" > "${obf}"
         ;;
