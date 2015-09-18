@@ -40,7 +40,7 @@ nicer function name for the site index page. The function should print text or
 binary content using `cat`, `echo`, `printf` or similar.
 
 When a function is used to serve content, the Content-Type is declared in a
-variable with the same name as the file with a suffix "_Content_Type".
+variable with the same name as the function with a suffix "_Content_Type".
 
 See the library example above for an example of a content serving function and related _Content_Type variable.
 
