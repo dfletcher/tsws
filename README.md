@@ -41,6 +41,35 @@ because it is not listening for connections for an extended period of time.
     }
     tsws 127.0.0.1 8080
 
+### You can serve files from your filesystem:
+
+    TSWS_ROOT="/var/www/html" ./tsws
+
+When serving files this way, the server first looks to see if a file exists
+$TSWS_ROOT/$URL_PATH. If it does, and the file is actually inside TSWS_ROOT or
+a subdirectory, it will be served up. If the file exists but is not underneath
+TSWS_ROOT, a 500 error occurs.
+
+When serving files from disk, `file -ib` is used to detect the Content-Type.
+
+TSWS_ROOT is optional, if empty no files will be served from disk and all content is in Bash function form.
+
+### Content served through functions:
+
+If the file from the url path does not exist, or TSWS_ROOT is not set, the
+server looks for a function. Any characters other than [a-z|A-Z|0-9] will be
+replaced with an underscore. The function name is prefixed with "www". The root
+path in this scheme translates to "www_", so this is replaced by "www_index" in
+order to have a nicer function name for the site index page. The function
+should print text or binary content using `cat`, `echo`, `printf` or similar.
+
+When a function is used to serve content, the Content-Type is declared in a
+variable with the same name as the function with a suffix "_Content_Type".
+
+See the library example above for an example of a content serving function and related _Content_Type variable.
+
+### Getting down and dirty:
+
 Have a look at
 [the source code](https://github.com/dfletcher/tsws/blob/master/tsws)
 for many more details and discussion, including theory of operation and
