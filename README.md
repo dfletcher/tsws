@@ -30,14 +30,16 @@ TSWS_ROOT, a 500 error occurs.
 
 When serving files from disk, `file -ib` is used to detect the Content-Type.
 
+TSWS_ROOT is optional, if empty no files will be served from disk and all content is in Bash function form.
+
 ### Content served through functions:
 
-If the file from the url path does not exist, the server looks for a function.
-Any characters other than [a-z|A-Z|0-9] will be replaced with an underscore.
-The function name is prefixed with "www". The root path in this scheme
-translates to "www_", so this is replaced by "www_index" in order to have a
-nicer function name for the site index page. The function should print text or
-binary content using `cat`, `echo`, `printf` or similar.
+If the file from the url path does not exist, or TSWS_ROOT is not set, the
+server looks for a function. Any characters other than [a-z|A-Z|0-9] will be
+replaced with an underscore. The function name is prefixed with "www". The root
+path in this scheme translates to "www_", so this is replaced by "www_index" in
+order to have a nicer function name for the site index page. The function
+should print text or binary content using `cat`, `echo`, `printf` or similar.
 
 When a function is used to serve content, the Content-Type is declared in a
 variable with the same name as the function with a suffix "_Content_Type".
