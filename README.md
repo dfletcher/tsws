@@ -105,3 +105,20 @@ creating dynamic content.
   are pointed to it at the same time. Requests might get dropped and the order
   can get out of whack, sending the wrong file for a request.
 
+### Upcoming v0.2 roadmap
+
+- POST, file upload.
+
+- Deprecate `nc`, remove docs.
+
+- Improved URL parsing.
+
+- Stuff request headers into map available in content functions.
+
+- Detect envirornment, suggest course of action for missing deps.
+
+- Improve code flow, _tsws_response is overly long and hard to read.
+
+- It runs slow, investigate ways to improve performance.
+
+- Bug fixes reported in github issue queue and via pull requests.
