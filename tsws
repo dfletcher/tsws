@@ -33,6 +33,8 @@
 #  For more information, please refer to <http://unlicense.org>
 #
 
+declare TSWS_VERSION="0.1"
+
 # All informative console log messages are piped to here so e.g. it could be
 # quieted by setting TSWS_LOG=/dev/null or alternatively logged to a file.
 # The default is $(tty) which prints logs to console. TSWS_LOG may be set
@@ -383,6 +385,10 @@ cat <<EOF
         <td>${httpvers}</td>
       </tr>
       <tr>
+        <td class="th">TSWS Version</td>
+        <td>${TSWS_VERSION}</td>
+      </tr>
+      <tr>
         <td class="th">Status</td>
         <td>${status} ${msg}</td>
       </tr>
@@ -443,7 +449,6 @@ TABLE {
 
 TD {
   vertical-align: top;
-  padding-bottom: 0.25em;
   white-space: nowrap;
 }
 
