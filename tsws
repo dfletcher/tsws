@@ -378,7 +378,7 @@ cat <<EOF
         <td class="th">Operating System</td>
         <td>$(uname -o)</td>
       </tr>
-      $( [ -x "$(which lsb_release)" ] &&
+      $( [ -x "$(which lsb_release 2>/dev/null)" ] &&
         echo "<tr><td class="th">Distribution</td><td>$(lsb_release -ds)</td></tr>")
       <tr>
         <td class="th">HTTP Version</td>
