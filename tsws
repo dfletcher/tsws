@@ -260,7 +260,6 @@ function _tsws_response {
             if grep "^${TSWS_ROOT}" <<< "${actualdir}" >/dev/null; then
               # Yes, the file is inside TSWS_ROOT, serve it up.
               callback="_tsws_file"
-	echo "abs: ${abs}" >> ${TSWS_LOG}
               content_type="$(file -ib "${abs}")"
             else
               # Client is doing something funky with paths, we can't confirm
