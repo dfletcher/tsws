@@ -42,6 +42,9 @@ declare TSWS_VERSION="0.1"
 # tsws function.
 [ -z "${TSWS_LOG}" ] && declare TSWS_LOG="$(tty)"
 
+# Normalize TSWS_ROOT.
+[ -d "${TSWS_ROOT}" ] && declare TSWS_ROOT="$(cd -- "${TSWS_ROOT}" && pwd)"
+
 # -----------------------------------------------------------------------------
 # tsws [host [, port]]
 # -----------------------------------------------------------------------------
@@ -169,7 +172,9 @@ function tsws {
   if [ -x "${_socat}" ] || [ -x "${_nc}" ]; then
     printf $'\ntsws HTTP/1.1' >"${TSWS_LOG}"
     printf $' started %s' "$(date)" >"${TSWS_LOG}"
-    printf $' on %s:%s\n\n' "${host}" "${port}" >"${TSWS_LOG}"
+    printf $' on %s:%s' "${host}" "${port}" >"${TSWS_LOG}"
+    [ -d "${TSWS_ROOT}" ] && printf $', root=%s' "${TSWS_ROOT}"
+    printf $'\n\n'
   fi
 
   if [ -x "${_socat}" ]; then
@@ -211,7 +216,7 @@ function _tsws_response {
     line="$(sed $'s/[\r\b\a\t]//g' <<< "${line}")"
     # Sanitize. TODO this santization is probably not complete and may
     # behave incorrectly for some URLs.
-    line="$(sed 's/[^-a-zA-Z0-9\/\.\:\?\+\*\&\=[:space:]]//g' <<< "${line}")"
+    line="$(sed 's/[^-a-zA-Z0-9\_\/\.\:\?\+\*\&\=[:space:]]//g' <<< "${line}")"
     if [ -n "${line}" ]; then
       # ${line} is not empty, it is either a "Request-Line" or a header
       # line. If we have no 'method' yet we assume it is a Request-Line.
@@ -242,7 +247,7 @@ function _tsws_response {
         value="$(sed 's/\+/ /g' <<< "${value}")"
         cgi_get["${name}"]="${value}"
       done <<< "${query}"
-      abs="${TSWS_ROOT}/${uri}"
+      abs="${TSWS_ROOT}${uri}"
       obf="$(mktemp -u)"
       [ -z "${content_type}" ] && content_type="text/plain"
       case "${method:?}" in
@@ -255,6 +260,7 @@ function _tsws_response {
             if grep "^${TSWS_ROOT}" <<< "${actualdir}" >/dev/null; then
               # Yes, the file is inside TSWS_ROOT, serve it up.
               callback="_tsws_file"
+	echo "abs: ${abs}" >> ${TSWS_LOG}
               content_type="$(file -ib "${abs}")"
             else
               # Client is doing something funky with paths, we can't confirm
