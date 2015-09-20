@@ -1,4 +1,7 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+set -u
+set -e
 
 # --------------------------------
 # Totally Simple Web Server (TSWS)
@@ -40,7 +43,7 @@ declare TSWS_VERSION="0.1"
 # The default is $(tty) which prints logs to console. TSWS_LOG may be set
 # in the environment before running the script or changed before calling the
 # tsws function.
-[ -z "${TSWS_LOG}" ] && declare TSWS_LOG="$(tty)"
+[ -z "${TSWS_LOG:-}" ] && declare TSWS_LOG="$(tty)"
 
 # -----------------------------------------------------------------------------
 # tsws [host [, port]]
@@ -242,12 +245,12 @@ function _tsws_response {
         value="$(sed 's/\+/ /g' <<< "${value}")"
         cgi_get["${name}"]="${value}"
       done <<< "${query}"
-      abs="${TSWS_ROOT}/${uri}"
       obf="$(mktemp -u)"
-      [ -z "${content_type}" ] && content_type="text/plain"
+      [ -z "${content_type:-}" ] && content_type="text/plain"
       case "${method:?}" in
         GET|HEAD)
-          if [ -d "${TSWS_ROOT}" ] && [ -f "${abs}" ]; then
+          abs="${TSWS_ROOT:-}/${uri}"
+          if [ -d "${TSWS_ROOT:-}" ] && [ -f "${abs}" ]; then
             # TSWS_ROOT is defined and the calculated path exists.
             # First test if the path is inside TSWS_ROOT.
             local dir="$(dirname "${abs}")"
@@ -747,12 +750,12 @@ EOF
 #
 
 # Setting TSWS_LIBRARY=1 will load all the functions but not start the server.
-[ "${TSWS_LIBRARY}" = "1" ] && return 0
+[ "${TSWS_LIBRARY:-0}" = "1" ] && return 0
 
 # Setting TSWS_RESPONSE=1 will run the script in response mode, handle one
 # connection on stdin/stdout and then exit.
 
-if [ "${TSWS_RESPONSE}" = "1" ]; then
+if [ "${TSWS_RESPONSE:-0}" = "1" ]; then
   while : ; do _tsws_response || break; done
   exit $?
 fi
