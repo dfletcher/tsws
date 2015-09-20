@@ -408,7 +408,7 @@ cat <<EOF
         <td>${callback}</td>
       </tr>
     </table>
-    $(if [ ${#cgi_get[@]} -gt 0 ]; then
+    $(if [ -n "${cgi_get:-}" ] && [ ${#cgi_get[@]} -gt 0 ]; then
       echo $'<h3>CGI GET vars:</H3>\n<table>'
       for name in "${!cgi_get[@]}"; do
         echo "<tr><td class="th">${name}</td><td>${cgi_get["${name}"]}</td></tr>"
