@@ -53,9 +53,6 @@ declare TSWS_VERSION="0.1"
 # function lives in has the same interface as the function: tsws HOST PORT and
 # the script itself can be used in the same ways as "Example usage" below.
 #
-# This function can use either socat or nc as a network backend. Socat is
-# preferred.
-#
 # ---------
 # Arguments
 # ---------
@@ -82,9 +79,9 @@ declare TSWS_VERSION="0.1"
 #  # User closed the browser, we're done, stop the server.
 #  kill ${tsws_pid}
 #
-# --------------------------------
-# Theory of operation - socat mode
-# --------------------------------
+# -------------------
+# Theory of operation
+# -------------------
 #
 # The socat program opens a network port and begins listening. When an inbound
 # connection is made, socat will call system() and invoke our script, passing
@@ -107,34 +104,12 @@ declare TSWS_VERSION="0.1"
 #    - S: Socat SYSTEM option.
 #
 # --------------------------------------------------------------------------
-#                                  Diagram: Theory of operation - socat mode
+#                                               Diagram: Theory of operation
 #
-# -----------------------------
-# Theory of operation - nc mode
-# -----------------------------
 #
-# The nc program opens a network port and begins listening. When an inbound
-# connection is made, the STDOUT of nc is pushed to a FIFO pipe. The
-# tsws_response function runs concurrently and waits for input from the FIFO
-# pipe. When tsws_response finds an HTTP request there, it processes and
-# returns a well-formed HTTP response back to nc STDIN. nc sends this
-# response back to the requesting client.
-#
-# --------------------------------------------------------------------------
-#
-#                                        +----+ (1)
-#       Browser <===> The Internet <===> | nc | ---> FIFO pipe ---+
-#                                        +----+                   |
-#                                       (0) ^                     |
-#                                           |                     |
-#                                           +-- tsws_response <--+
-#
-#    - 1: STDOUT of `nc` process which carries HTTP requests.
-#    - 0: STDIN of `nc` process which carries HTTP responses.
-#    - tsws_response: handler function reads requests, produces responses.
-#
-# --------------------------------------------------------------------------
-#                                     Diagram: Theory of operation - nc mode
+# Note: Netcat `nc` can be used as a back-end but it is deprecated and not
+# recommended. Historical documentation is here:
+# https://github.com/dfletcher/tsws/blob/v0.1/tsws#L109
 #
 # ------------
 # Requirements
@@ -143,15 +118,8 @@ declare TSWS_VERSION="0.1"
 #   - Bash (obviously) 4.0 or later. The associative array support in Bash 4.0
 #     is needed to support maps containing CGI variables.
 #
-#   - Socat (socat) [RECOMMENDED] handles the network listen call for us and
-#     binds stdin and stdout of the nc process to connected clients.
-#
-#   - Netcat (nc) [ALTERNATE] handles the network listen call for us and binds
-#     stdin and stdout of the nc process to connected clients.
-#
-#   - mkfifo: A FIFO pipe connects the output of nc to our tsws_response
-#     function which processes requests and sends responses back through stdin
-#     of nc to browser client.
+#   - Socat (socat) handles the network listen call for us and binds stdin and
+#     stdout of the socat process to our _tsws_response function.
 #
 #   - wc -c: For calculating Content-Length.
 #
@@ -181,6 +149,7 @@ function tsws {
       "TCP-LISTEN:${port},bind=${host},fork" \
       "SYSTEM:TSWS_RESPONSE=1 TSWS_LOG=${TSWS_LOG} $0"
   elif [ -x "${_nc}" ]; then
+    # DEPRECATED nc mode.
     # Initialize the FIFO pipe.
     local -r fifo="$(mktemp -u)"
     mkfifo -m 600 "${fifo}"
@@ -482,7 +451,7 @@ cat <<EOF
     <img class="graphic" src="/graphic.jpg" />
     <b>&copy; 2015 Dave Fletcher</b><br>
     All rights reserved</em><br>
-    <p><em>A web server in <a href="https://www.gnu.org/software/bash/">Bash</a> and <a href="http://www.dest-unreach.org/socat/">Socat</a> (or <a href="http://nc110.sourceforge.net/">Netcat</a>).</em></p>
+    <p><em>A web server in <a href="https://www.gnu.org/software/bash/">Bash</a> and <a href="http://www.dest-unreach.org/socat/">Socat</a>.</em></p>
     <table>
       <tr>
         <td class="th">Generated on</td>
