@@ -102,7 +102,7 @@ declare TSWS_VERSION="0.1"
 #    - 1: STDOUT of `socat` process which carries HTTP requests.
 #    - 0: STDIN of `socat` process which carries HTTP responses.
 #    - TSWS_RESPONSE=1 ./tsws: call this script in response mode, it
-#      invokes _tsws_response in a forever loop.
+#      invokes tsws_response in a forever loop.
 #    - L: Socat TCP-LISTEN option.
 #    - S: Socat SYSTEM option.
 #
@@ -115,8 +115,8 @@ declare TSWS_VERSION="0.1"
 #
 # The nc program opens a network port and begins listening. When an inbound
 # connection is made, the STDOUT of nc is pushed to a FIFO pipe. The
-# _tsws_response function runs concurrently and waits for input from the FIFO
-# pipe. When _tsws_response finds an HTTP request there, it processes and
+# tsws_response function runs concurrently and waits for input from the FIFO
+# pipe. When tsws_response finds an HTTP request there, it processes and
 # returns a well-formed HTTP response back to nc STDIN. nc sends this
 # response back to the requesting client.
 #
@@ -127,11 +127,11 @@ declare TSWS_VERSION="0.1"
 #                                        +----+                   |
 #                                       (0) ^                     |
 #                                           |                     |
-#                                           +-- _tsws_response <--+
+#                                           +-- tsws_response <--+
 #
 #    - 1: STDOUT of `nc` process which carries HTTP requests.
 #    - 0: STDIN of `nc` process which carries HTTP responses.
-#    - _tsws_response: handler function reads requests, produces responses.
+#    - tsws_response: handler function reads requests, produces responses.
 #
 # --------------------------------------------------------------------------
 #                                     Diagram: Theory of operation - nc mode
@@ -149,7 +149,7 @@ declare TSWS_VERSION="0.1"
 #   - Netcat (nc) [ALTERNATE] handles the network listen call for us and binds
 #     stdin and stdout of the nc process to connected clients.
 #
-#   - mkfifo: A FIFO pipe connects the output of nc to our _tsws_response
+#   - mkfifo: A FIFO pipe connects the output of nc to our tsws_response
 #     function which processes requests and sends responses back through stdin
 #     of nc to browser client.
 #
@@ -185,10 +185,10 @@ function tsws {
     local -r fifo="$(mktemp -u)"
     mkfifo -m 600 "${fifo}"
     trap "[ -f \"${fifo}\" ] && rm \"${fifo}\"" EXIT INT TERM HUP # Cleanup.
-    # Connect _tsws_response to STDIN. Connect STDOUT to FIFO pipe. Then listen
+    # Connect tsws_response to STDIN. Connect STDOUT to FIFO pipe. Then listen
     # on ${host}:${port}. nc -l is "listen" and -k is "listen forever".
     "${_nc}" -kl "${host}" ${port} \
-      0< <(while : ; do _tsws_response 0< "${fifo}"; done) \
+      0< <(while : ; do tsws_response 0< "${fifo}"; done) \
       1> >(while : ; do cat - > "${fifo}"; done) \
       2>"${TSWS_LOG}" # Loop ^^ keeps pipe open.
       # Send ^^ nc errors (2>) to the log.
@@ -199,126 +199,265 @@ function tsws {
 }
 
 # -----------------------------------------------------------------------------
-# _tsws_response()
+# tsws_sanitize()
 # -----------------------------------------------------------------------------
 #
-# Internal workhorse function for handling requests and responses for tsws.
-# Do not call it directly.
+# Replace CRLF with \n. Strip backspaces, alert bells, and tabs.
+# Strip everything but a narrow set of known chars.
 #
-function _tsws_response {
-  local method uri path httpvers callback content_type status msg obf clen abs
-  method=""
-  while read -r line; do
-    status=""
-    # Replace CRLF with \n. Strip backspaces, alert bells, and tabs.
-    line="$(sed $'s/[\r\b\a\t]//g' <<< "${line}")"
-    # Sanitize. TODO this santization is probably not complete and may
-    # behave incorrectly for some URLs.
-    line="$(sed 's/[^-a-zA-Z0-9\/\.\:\?\+\*\&\=[:space:]]//g' <<< "${line}")"
-    if [ -n "${line}" ]; then
-      # ${line} is not empty, it is either a "Request-Line" or a header
-      # line. If we have no 'method' yet we assume it is a Request-Line.
-      # http://www.w3.org/Protocols/rfc2616/rfc2616-sec5.html
-      if [ -z "${method}" ]; then
-        read -r method uri httpvers <<< "${line}"
-        continue
-      fi
-      # TODO: if we cared about any of the request headers, here is the
-      # place to read them by parsing ${line}.
-    else
-      # ${line} is empty, so we received two consecutive CRLF.
-      # Process the request.
-      #
-      # Currently all "files" served up by the server are functions in this
-      # script that return content. This shows how dynamic content can be
-      # served and keeps this example all in one single file. It should be
-      # easy to adapt this to also read real files from disk Hint: obf below
-      # and use `file` to get content_type.
-      unset cgi_get
-      local -A cgi_get
-      IFS='?#' read path query fragment <<< "${uri}"
-      while read -d $'&' namevaluepair || [ -n "${namevaluepair}" ]; do
-        # Note this method of parsing CGI variables is currently really weak
-        # and ignores & that are escaped as &amp;
-        IFS=$'=' read name value <<< "${namevaluepair}"
-        # The worst possible unescaping, replace + with space.
-        value="$(sed 's/\+/ /g' <<< "${value}")"
-        cgi_get["${name}"]="${value}"
-      done <<< "${query}"
-      obf="$(mktemp -u)"
-      [ -z "${content_type:-}" ] && content_type="text/plain"
-      case "${method:?}" in
-        GET|HEAD)
-          abs="${TSWS_ROOT:-}/${uri}"
-          if [ -d "${TSWS_ROOT:-}" ] && [ -f "${abs}" ]; then
-            # TSWS_ROOT is defined and the calculated path exists.
-            # First test if the path is inside TSWS_ROOT.
-            local dir="$(dirname "${abs}")"
-            local actualdir="$(cd -- "${dir}" && pwd)"
-            if grep "^${TSWS_ROOT}" <<< "${actualdir}" >/dev/null; then
-              # Yes, the file is inside TSWS_ROOT, serve it up.
-              callback="_tsws_file"
-              content_type="$(file -ib "${abs}")"
-            else
-              # Client is doing something funky with paths, we can't confirm
-              # that the requested file is inside TSWS_ROOT.
-              status=500; msg="Internal Server Error"
-              printf $'Path is outside web root: %s dir=%s actual=%s' "${uri}" "${dir}" "${actualdir}" > "${obf}"
-            fi
-          else
-            # If the file does not exist we go into dynamic callback mode.
-            # Calculate a function name.
-            callback="www$(sed -e 's/\//_/g' -e 's/\./_/g' <<< "${path}")"
-            [ "${callback}" = "www_" ] && callback="www_index"
-            content_type="${callback}_Content_Type"
-            content_type="${!content_type}"
-          fi
-          if local -f  "${callback}" > /dev/null; then
-            # ${callback} is a function we declared.
-            status=200; msg="OK"
-            ${callback} > "${obf}"
-          elif [ -z "${status}" ]; then
-            # ${callback} is not defined and it is not a file, 404.
-            status=404; msg="Not Found"
-            printf $'Not found: %s.' "${path}" > "${obf}"
-          fi
-        ;;
-        *)
-          # Currently we only handle GET and HEAD requests.
-          status=500; msg="Internal Server Error"
-          printf $'Server Error: unknown method %s.' "${method}" > "${obf}"
-        ;;
-      esac
-      clen=$(cat "${obf}"|wc -c)
-      # Log the request.
-      printf $'%s %s' "${method}" "${path} $(date); " >"${TSWS_LOG}"
-      # Output headers, tee shows the response headers in log.
-      printf $'HTTP/1.1 %s %s\r\n' "${status:?}" "${msg:?}" | tee "${TSWS_LOG}"
-      printf $'Content-Length: %s\r\n' "${clen}" | tee "${TSWS_LOG}"
-      printf $'Content-Type: %s\r\n' "${content_type}" | tee "${TSWS_LOG}"
-      printf $'Connection: close\r\n' | tee "${TSWS_LOG}"
-      printf $'\r\n' | tee "${TSWS_LOG}"
-      # Output the response data.
-      [ "${method}" != "HEAD" ] && cat "${obf}"
-      # This is meant to clean up a temporary file so if you alter the code
-      # to handle real files don't let this accidentally delete it!
-      rm "${obf}"
-      # Reset for the next loop iteration.
-      method=""
-    fi
-  done
+# This function does not take arguments. It reads a string from STDIN
+# and writes the sanitized value to STDOUT.
+#
+function tsws_sanitize {
+  sed -e $'s/[\r\b\a\t]//g' -e 's/[^-a-zA-Z0-9\/\.\:\;\?\+\*\&\=\,[:space:]]//g'
+}
+
+
+# -----------------------------------------------------------------------------
+# tsws_urldecode()
+# -----------------------------------------------------------------------------
+#
+# Decode URLs.
+#
+# Via http://unix.stackexchange.com/questions/159253/decoding-url-encoding-percent-encoding
+#
+# This function does not take arguments. It reads an URL string from STDIN
+# and writes the decoded value to STDOUT.
+#
+function tsws_urldecode {
+  awk -niord '{printf RT?$0chr("0x"substr(RT,2)):$0}' RS=%.. | sed 's/\+/ /g'
 }
 
 # -----------------------------------------------------------------------------
-# _tsws_file()
+# tsws_parseurlquery(url)
 # -----------------------------------------------------------------------------
 #
-# File server function. If TSWS_ROOT was defined as a valid directory and the
-# request points to an existing file, the abs variable is set and this function
-# is called to supply the content.
+# Parse URL query name value parameters.
 #
-function _tsws_file {
-  cat "${abs:?}"
+# Note this method of parsing CGI variables is currently really weak
+# and ignores & that are escaped as &amp; TODO find a better way to do this.
+#
+# ---------
+# Arguments
+# ---------
+#
+#    - url: URL to parse.
+#
+function tsws_parseurlquery {
+  while read -d $'&' namevaluepair || [ -n "${namevaluepair}" ]; do
+    IFS=$'=' read name value <<< "${namevaluepair}"
+    name="$(tsws_urldecode <<< "${name}" | tsws_sanitize)"
+    value="$(tsws_urldecode <<< "${value}")"
+    tsws_parsed_url["${name}"]="${value}"
+  done <<< "$1"
+}
+
+# -----------------------------------------------------------------------------
+# tsws_response_headers(ob_file, status, message [, content_type])
+# -----------------------------------------------------------------------------
+#
+# Write HTTP headers.
+#
+# ---------
+# Arguments
+# ---------
+#
+#    - ob_file: Path to output buffer temp file.
+#
+#    - status: HTTP status code, e.g. 200, 404, 500.
+#
+#    - message: HTTP status message e.g. "OK", "Not found".
+#
+#    - content_type: Value for the Content-Type header. Optional. If not
+#      supplied, `file -ib $ob_file` is used to calculate a value.
+#
+#    - ob_file: Path to output buffer temp file.
+#
+function tsws_response_headers {
+  local clen="$(cat "$1" | wc -c)"
+  local filetype="$(file -ib "$1")"
+  local content_type="${4:-${filetype}}"
+  printf $'HTTP/1.1 %s %s\r\n' "$2" "$3" | tee "${TSWS_LOG}"
+  printf $'Content-Length: %s\r\n' "${clen}" | tee "${TSWS_LOG}"
+  printf $'Content-Type: %s\r\n' "${content_type}" | tee "${TSWS_LOG}"
+  printf $'Connection: close\r\n' | tee "${TSWS_LOG}"
+  printf $'\r\n' | tee "${TSWS_LOG}"
+}
+
+# -----------------------------------------------------------------------------
+# tsws_response_body(ob_file)
+# -----------------------------------------------------------------------------
+#
+# Write output buffer and remove the temporary file.
+#
+# ---------
+# Arguments
+# ---------
+#
+#    - ob_file: Path to output buffer temp file.
+#
+function tsws_response_body {
+  [ "${method:?}" != "HEAD" ] && cat "$1"
+  rm "$1"
+}
+
+# -----------------------------------------------------------------------------
+# tsws_500(ob_file, message)
+# -----------------------------------------------------------------------------
+#
+# Produce a 500 server error. Script should exit after calling this.
+#
+# ---------
+# Arguments
+# ---------
+#
+#    - ob_file: Path to output buffer temp file.
+#
+#    - message: Response message displayed in browser.
+#
+function tsws_500 {
+  printf "Server Error: $2" > "$1"
+  tsws_response_headers "$1" 500 "Internal Server Error" "text/html; charset=utf-8"
+  tsws_response_body "$1"
+}
+
+# -----------------------------------------------------------------------------
+# tsws_404(ob_file, url_path)
+# -----------------------------------------------------------------------------
+#
+# Produce a 404 error. Script should exit after calling this.
+#
+# ---------
+# Arguments
+# ---------
+#
+#    - ob_file: Path to output buffer temp file.
+#
+#    - url_path: The path portion of the URL.
+#
+function tsws_404 {
+  printf "Not found: $2" > "$1"
+  tsws_response_headers "$1" 404 "Not found" "text/html; charset=utf-8"
+  tsws_response_body "$1"
+}
+
+# -----------------------------------------------------------------------------
+# tsws_response()
+# -----------------------------------------------------------------------------
+#
+# Read an HTTP request, write a response.
+#
+# This function does not take arguments. It reads the request from STDIN
+# and writes the response to STDOUT.
+#
+function tsws_response {
+
+  # First line of the request.
+  local method uri httpvers
+  read -r method uri httpvers
+  method="$(tsws_sanitize <<< "${method}")"
+  uri="$(tsws_sanitize <<< "${uri}")"
+  httpvers="$(tsws_sanitize <<< "${httpvers}")"
+  [ -z "${method}" ] && return 0
+
+  # Output buffer file.
+  local obf="$(mktemp -u)"
+
+  # Read the headers into an associative array.
+  local -A request_headers
+  while read -r line; do
+    [ "${line}" = $'\r' ] && break
+    local name="$(sed 's/^\([^:]*\): [^$]*$/\1/g' <<< "${line}")"
+    local value="$(sed 's/^[^:]*: \([^$]*\)$/\1/g' <<< "${line}")"
+    request_headers["${name}"]="${value}"
+  done
+
+  # Process POSTs, load POST data into cgi_post.
+  local -A cgi_post
+  if [ "${method}" = "POST" ]; then
+    local post
+    if [ -z "${request_headers['Content-Length']}" ]; then
+      tsws_500 "${obf}" "No Content-Length on header."
+      return 1
+    fi
+    local clen="${request_headers['Content-Length']}"
+    if [ "${clen}" -neq "${clen}" ] 2>/dev/null; then
+      tsws_500 "${obf}" "Content-Length is not numeric."
+      return 1
+    fi
+    if [ "${clen}" -lt 0 ]; then
+      tsws_500 "${obf}" "Content-Length is not positive."
+      return 1
+    fi
+    if [ "${clen}" -gt 0 ]; then
+      IFS='' read -r -d '' -n "${clen}" post
+      unset tsws_parsed_url
+      local -A tsws_parsed_url
+      tsws_parseurlquery "${post}"
+      for name in "${!tsws_parsed_url[@]}"; do
+        cgi_post["${name}"]="${tsws_parsed_url[${name}]}"
+      done
+    fi
+  fi
+
+  # Process GETs, load URL variables into cgi_get.
+  local -A cgi_get
+  local path query fragment
+  IFS='?#' read path query fragment <<< "${uri}"
+  unset tsws_parsed_url
+  local -A tsws_parsed_url
+  tsws_parseurlquery "${query}"
+  for name in "${!tsws_parsed_url[@]}"; do
+    cgi_get["${name}"]="${tsws_parsed_url[${name}]}"
+  done
+
+  # Check if this is a request for a filesystem file.
+  local abs="${TSWS_ROOT:-}/${uri}"
+  if [ -d "${TSWS_ROOT:-}" ] && [ -f "${abs}" ]; then
+    # TSWS_ROOT is defined and the calculated path exists.
+    # First test if the path is inside TSWS_ROOT.
+    local dir="$(dirname "${abs}")"
+    local actualdir="$(cd -- "${dir}" && pwd)"
+    if grep "^${TSWS_ROOT}" <<< "${actualdir}" >/dev/null; then
+      # The file is inside TSWS_ROOT, serve it up.
+      cp "${abs}" "${obj}"
+      tsws_response_headers "${obf}" 200 "OK"
+      tsws_response_body "${obf}"
+      return 0
+    else
+      # Client is doing something funky with paths, we can't confirm
+      # that the requested file is inside TSWS_ROOT.
+      tsws_500 "${obf}" "Path is outside web root: ${uri} dir=${dir} actual=${actualdir}."
+      return 1
+    fi
+  fi
+
+  # Set host and port.
+  local host port
+  unset host port
+  IFS=':' read -r host port <<< "${request_headers['Host']}"
+
+  # Callback and Content-Type.
+  local callback="www$(sed -e 's/\//_/g' -e 's/\./_/g' <<< "${path}")"
+  [ "${callback}" = "www_" ] && callback="www_index"
+  local content_type="${callback}_Content_Type"
+  content_type="${!content_type}"
+  if ! local -f "${callback}" > /dev/null; then
+    tsws_404 "$1" "${url}"
+    return 1
+  fi
+
+  # Dispatch.
+  case "${method:?}" in
+    GET|HEAD|POST)
+      ${callback} > "${obf}"
+      tsws_response_headers "${obf}" 200 "OK" "${content_type}"
+      tsws_response_body "${obf}"
+    ;;
+    *)
+      tsws_500 "${obf}" "unimplemented method ${method}."
+    ;;
+  esac
 }
 
 # +---------------------------------------------------------------------------+
@@ -362,7 +501,7 @@ cat <<EOF
         <td>$(uname -r)</td>
       </tr>
       <tr>
-        <td class="th">Host</td>
+        <td class="th">Server host</td>
         <td>$(uname -n)</td>
       </tr>
       <tr>
@@ -378,22 +517,18 @@ cat <<EOF
         <td>$(uname -i)</td>
       </tr>
       <tr>
-        <td class="th">Operating System</td>
+        <td class="th">Operating system</td>
         <td>$(uname -o)</td>
       </tr>
       $( [ -x "$(which lsb_release 2>/dev/null)" ] &&
         echo "<tr><td class="th">Distribution</td><td>$(lsb_release -ds)</td></tr>")
       <tr>
-        <td class="th">HTTP Version</td>
+        <td class="th">HTTP version</td>
         <td>${httpvers}</td>
       </tr>
       <tr>
-        <td class="th">TSWS Version</td>
+        <td class="th">TSWS version</td>
         <td>${TSWS_VERSION}</td>
-      </tr>
-      <tr>
-        <td class="th">Status</td>
-        <td>${status} ${msg}</td>
       </tr>
       <tr>
         <td class="th">Method</td>
@@ -407,16 +542,52 @@ cat <<EOF
         <td class="th">Callback</td>
         <td>${callback}</td>
       </tr>
+      <tr>
+        <td class="th">Content-Type</td>
+        <td>${content_type}</td>
+      </tr>
+      <tr>
+        <td class="th">Client host</td>
+        <td>${host}</td>
+      </tr>
+      <tr>
+        <td class="th">Client port</td>
+        <td>${port}</td>
+      </tr>
     </table>
-    $(if [ -n "${cgi_get:-}" ] && [ ${#cgi_get[@]} -gt 0 ]; then
-      echo $'<h3>CGI GET vars:</H3>\n<table>'
-      for name in "${!cgi_get[@]}"; do
-        echo "<tr><td class="th">${name}</td><td>${cgi_get["${name}"]}</td></tr>"
-      done
-      echo "</table>"
-    else
-      echo "<p><a href='/?a=123&b=test+123&c=xyz#fragmentjumpythingy'>Test CGI GET vars</a></p>"
-    fi)
+    <fieldset>
+      <legend>Request Headers</legend>
+      <table>
+        $(for name in "${!request_headers[@]}"; do
+          echo "<tr><td class="th">${name}</td><td>${request_headers["${name}"]}</td></tr>"
+        done)
+      </table>
+    </fieldset>
+    <fieldset class='get'>
+      <legend>Test CGI GET</legend>
+      $(if [ -n "${cgi_get[*]:-}" ] && [ ${#cgi_get[@]} -gt 0 ]; then
+        echo $'<table>'
+        for name in "${!cgi_get[@]}"; do
+          echo "<tr><td class="th">${name}</td><td>${cgi_get["${name}"]}</td></tr>"
+        done
+        echo "</table><aside class="controls-right"><a href='/'>reset</a></aside>"
+      else
+        echo "<a href='/?a=123&b=test+123&c=xyz#fragmentjumpythingy'>Test CGI GET vars</a>"
+      fi)
+    </fieldset>
+    <fieldset class='post'>
+      <legend>Test CGI POST</legend>
+      $(if [ -n "${cgi_post[*]:-}" ] && [ ${#cgi_post[@]} -gt 0 ]; then
+        echo $'<table>'
+        for name in "${!cgi_post[@]}"; do
+          echo "<tr><td class="th">${name}</td><td><pre>${cgi_post["${name}"]}</pre></td></tr>"
+        done
+        echo "</table><aside class="controls-right"><a href='/'>reset</a></aside>"
+      else
+        echo "<form method='POST'><textarea name='texty'></textarea><br><input class='submit' type='submit' name='submit' value='Test POST'></form>"
+      fi)
+    </fieldset>
+>>>>>>> post
     <a href="https://github.com/dfletcher/tsws" title="Fork me on GitHub"><img style="position: absolute; top: 0; right: 0; border: 0;" src="https://camo.githubusercontent.com/e7bbb0521b397edbd5fe43e7f760759336b5e05f/68747470733a2f2f73332e616d617a6f6e6177732e636f6d2f6769746875622f726962626f6e732f666f726b6d655f72696768745f677265656e5f3030373230302e706e67" alt="Fork me on GitHub" data-canonical-src="https://s3.amazonaws.com/github/ribbons/forkme_right_green_007200.png"></a>
   </body>
 </html>
@@ -453,6 +624,85 @@ TABLE {
 TD {
   vertical-align: top;
   white-space: nowrap;
+}
+
+PRE {
+  margin: 0.185em 0 0 0;
+}
+
+FORM {
+  text-align: right;
+}
+
+FIELDSET {
+  margin: 2em 0;
+  padding: 1em;
+}
+
+LEGEND {
+  padding: 0 .5em;
+  font-weight: bold;
+}
+
+TEXTAREA {
+  width: 90%;
+  display: block;
+  margin: 1em;
+  height: 6em;
+  padding: 1em;
+}
+
+INPUT.submit {
+  margin: 0 1em 1em 0;
+  -moz-box-shadow:inset 0px 1px 0px 0px #ffffff;
+  -webkit-box-shadow:inset 0px 1px 0px 0px #ffffff;
+  box-shadow:inset 0px 1px 0px 0px #ffffff;
+  background:-webkit-gradient(linear, left top, left bottom, color-stop(0.05, #ffffff), color-stop(1, #f6f6f6));
+  background:-moz-linear-gradient(top, #ffffff 5%, #f6f6f6 100%);
+  background:-webkit-linear-gradient(top, #ffffff 5%, #f6f6f6 100%);
+  background:-o-linear-gradient(top, #ffffff 5%, #f6f6f6 100%);
+  background:-ms-linear-gradient(top, #ffffff 5%, #f6f6f6 100%);
+  background:linear-gradient(to bottom, #ffffff 5%, #f6f6f6 100%);
+  filter:progid:DXImageTransform.Microsoft.gradient(startColorstr='#ffffff', endColorstr='#f6f6f6',GradientType=0);
+  background-color:#ffffff;
+  -moz-border-radius:6px;
+  -webkit-border-radius:6px;
+  border-radius:6px;
+  border:1px solid #dcdcdc;
+  display:inline-block;
+  cursor:pointer;
+  color:#666666;
+  font-family:Arial;
+  font-size:13px;
+  font-weight:bold;
+  padding:6px 24px;
+  text-decoration:none;
+  text-shadow:0px 1px 0px #ffffff;
+}
+
+INPUT.submit:hover {
+  background:-webkit-gradient(linear, left top, left bottom, color-stop(0.05, #f6f6f6), color-stop(1, #ffffff));
+  background:-moz-linear-gradient(top, #f6f6f6 5%, #ffffff 100%);
+  background:-webkit-linear-gradient(top, #f6f6f6 5%, #ffffff 100%);
+  background:-o-linear-gradient(top, #f6f6f6 5%, #ffffff 100%);
+  background:-ms-linear-gradient(top, #f6f6f6 5%, #ffffff 100%);
+  background:linear-gradient(to bottom, #f6f6f6 5%, #ffffff 100%);
+  filter:progid:DXImageTransform.Microsoft.gradient(startColorstr='#f6f6f6', endColorstr='#ffffff',GradientType=0);
+  background-color:#f6f6f6;
+}
+
+INPUT.submit:active {
+  position:relative;
+  top:1px;
+}
+
+FIELDSET.post td {
+  padding-bottom: 1em;
+}
+
+.controls-right {
+  text-align: right;
+  margin-right: 1em;
 }
 
 .th {
@@ -756,7 +1006,7 @@ EOF
 # connection on stdin/stdout and then exit.
 
 if [ "${TSWS_RESPONSE:-0}" = "1" ]; then
-  while : ; do _tsws_response || break; done
+  while : ; do tsws_response || break; done
   exit $?
 fi
 declare host="${1:-127.0.0.1}"

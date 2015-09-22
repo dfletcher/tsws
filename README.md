@@ -107,17 +107,17 @@ creating dynamic content.
 
 ### Upcoming v0.2 roadmap
 
-- POST, file upload.
+- POST (done), file upload (todo).
 
 - Deprecate `nc`, remove docs.
 
 - Improved URL parsing.
 
-- Stuff request headers into map available in content functions.
+- Stuff request headers into map available in content functions. (done)
 
 - Detect envirornment, suggest course of action for missing deps.
 
-- Improve code flow, _tsws_response is overly long and hard to read.
+- Improve code flow, tsws_response is overly long and hard to read. (done)
 
 - It runs slow, investigate ways to improve performance.
 
