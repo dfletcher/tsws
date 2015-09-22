@@ -45,6 +45,9 @@ declare TSWS_VERSION="0.1"
 # tsws function.
 [ -z "${TSWS_LOG:-}" ] && declare TSWS_LOG="$(tty)"
 
+# Normalize TSWS_ROOT.
+[ -d "${TSWS_ROOT}" ] && declare TSWS_ROOT="$(cd -- "${TSWS_ROOT}" && pwd)"
+
 # -----------------------------------------------------------------------------
 # tsws [host [, port]]
 # -----------------------------------------------------------------------------
@@ -140,7 +143,9 @@ function tsws {
   if [ -x "${_socat}" ] || [ -x "${_nc}" ]; then
     printf $'\ntsws HTTP/1.1' >"${TSWS_LOG}"
     printf $' started %s' "$(date)" >"${TSWS_LOG}"
-    printf $' on %s:%s\n\n' "${host}" "${port}" >"${TSWS_LOG}"
+    printf $' on %s:%s' "${host}" "${port}" >"${TSWS_LOG}"
+    [ -d "${TSWS_ROOT}" ] && printf $', root=%s' "${TSWS_ROOT}"
+    printf $'\n\n'
   fi
 
   if [ -x "${_socat}" ]; then
@@ -178,7 +183,7 @@ function tsws {
 # and writes the sanitized value to STDOUT.
 #
 function tsws_sanitize {
-  sed -e $'s/[\r\b\a\t]//g' -e 's/[^-a-zA-Z0-9\/\.\:\;\?\+\*\&\=\,[:space:]]//g'
+  sed -e $'s/[\r\b\a\t]//g' -e 's/[^-a-zA-Z0-9\_\/\.\:\;\?\+\*\&\=\,[:space:]]//g'
 }
 
 
@@ -389,7 +394,7 @@ function tsws_response {
     local actualdir="$(cd -- "${dir}" && pwd)"
     if grep "^${TSWS_ROOT}" <<< "${actualdir}" >/dev/null; then
       # The file is inside TSWS_ROOT, serve it up.
-      cp "${abs}" "${obj}"
+      cp "${abs}" "${obf}"
       tsws_response_headers "${obf}" 200 "OK"
       tsws_response_body "${obf}"
       return 0
