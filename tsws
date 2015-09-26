@@ -46,7 +46,7 @@ declare TSWS_VERSION="0.1"
 [ -z "${TSWS_LOG:-}" ] && declare TSWS_LOG="$(tty)"
 
 # Normalize TSWS_ROOT.
-[ -d "${TSWS_ROOT}" ] && declare TSWS_ROOT="$(cd -- "${TSWS_ROOT}" && pwd)"
+[ -d "${TSWS_ROOT:-}" ] && declare TSWS_ROOT="$(cd -- "${TSWS_ROOT}" && pwd)"
 
 # -----------------------------------------------------------------------------
 # tsws [host [, port]]
@@ -144,15 +144,15 @@ function tsws {
     printf $'\ntsws HTTP/1.1' >"${TSWS_LOG}"
     printf $' started %s' "$(date)" >"${TSWS_LOG}"
     printf $' on %s:%s' "${host}" "${port}" >"${TSWS_LOG}"
-    [ -d "${TSWS_ROOT}" ] && printf $', root=%s' "${TSWS_ROOT}"
+    [ -d "${TSWS_ROOT:-}" ] && printf $', root=%s' "${TSWS_ROOT}"
     printf $'\n\n'
   fi
 
   if [ -x "${_socat}" ]; then
     local -r _bash=$(which bash)
-    "${_socat}" \
+    "${_socat}" -dD \
       "TCP-LISTEN:${port},bind=${host},fork" \
-      "SYSTEM:TSWS_RESPONSE=1 TSWS_LOG=${TSWS_LOG} $0"
+      "SYSTEM:TSWS_RESPONSE=1 TSWS_LOG=${TSWS_LOG} /usr/bin/env bash $0"
   elif [ -x "${_nc}" ]; then
     # DEPRECATED nc mode.
     # Initialize the FIFO pipe.
@@ -415,9 +415,9 @@ function tsws_response {
   local callback="www$(sed -e 's/\//_/g' -e 's/\./_/g' <<< "${path}")"
   [ "${callback}" = "www_" ] && callback="www_index"
   local content_type="${callback}_Content_Type"
-  content_type="${!content_type}"
+  content_type="${!content_type:-}"
   if ! local -f "${callback}" > /dev/null; then
-    tsws_404 "$1" "${url}"
+    tsws_404 "${obf}" "${uri}"
     return 1
   fi
 
@@ -979,8 +979,8 @@ EOF
 # connection on stdin/stdout and then exit.
 
 if [ "${TSWS_RESPONSE:-0}" = "1" ]; then
-  while : ; do tsws_response || break; done
-  exit $?
+  tsws_response
+  exit 0
 fi
 declare host="${1:-127.0.0.1}"
 declare port="${2:-18080}"
