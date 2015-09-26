@@ -37,13 +37,14 @@ set -e
 #
 
 declare TSWS_VERSION="0.1"
+declare TSWS_TTY="$(tty)"
 
 # All informative console log messages are piped to here so e.g. it could be
 # quieted by setting TSWS_LOG=/dev/null or alternatively logged to a file.
 # The default is $(tty) which prints logs to console. TSWS_LOG may be set
 # in the environment before running the script or changed before calling the
 # tsws function.
-[ -z "${TSWS_LOG:-}" ] && declare TSWS_LOG="$(tty)"
+[ -z "${TSWS_LOG:-}" ] && declare TSWS_LOG="${TSWS_TTY}"
 
 # Normalize TSWS_ROOT.
 [ -d "${TSWS_ROOT:-}" ] && declare TSWS_ROOT="$(cd -- "${TSWS_ROOT}" && pwd)"
@@ -110,9 +111,8 @@ declare TSWS_VERSION="0.1"
 #                                               Diagram: Theory of operation
 #
 #
-# Note: Netcat `nc` can be used as a back-end but it is deprecated and not
-# recommended. Historical documentation is here:
-# https://github.com/dfletcher/tsws/blob/v0.1/tsws#L109
+# Note: Netcat `nc` can no longer be used as a back-end. Historical
+# documentation is here: https://github.com/dfletcher/tsws/blob/v0.1/tsws#L109
 #
 # ------------
 # Requirements
@@ -137,39 +137,58 @@ function tsws {
 
   local -r host="${1:-127.0.0.1}"
   local -r port="${2:-18080}"
-  local -r _socat=$(which socat)
-  local -r _nc=$(which nc)
+  local _socat=$(which socat 2>/dev/null)
 
-  if [ -x "${_socat}" ] || [ -x "${_nc}" ]; then
-    printf $'\ntsws HTTP/1.1' >"${TSWS_LOG}"
-    printf $' started %s' "$(date)" >"${TSWS_LOG}"
-    printf $' on %s:%s' "${host}" "${port}" >"${TSWS_LOG}"
-    [ -d "${TSWS_ROOT:-}" ] && printf $', root=%s' "${TSWS_ROOT}"
-    printf $'\n\n'
+  if [ ! -x "${_socat}" ]; then
+    if tsws_install; then
+      _socat=$(which socat 2>/dev/null)
+    else
+      exit $?
+    fi
   fi
+  printf $'\ntsws HTTP/1.1' >"${TSWS_LOG}"
+  printf $' started %s' "$(date)" >"${TSWS_LOG}"
+  printf $' on %s:%s' "${host}" "${port}" >"${TSWS_LOG}"
+  [ -d "${TSWS_ROOT:-}" ] && printf $', root=%s' "${TSWS_ROOT}"
+  printf $'\n\n'
+  local -r _bash=$(which bash 2>/dev/null)
+  "${_socat}" -dD \
+    "TCP-LISTEN:${port},bind=${host},fork" \
+    "SYSTEM:TSWS_RESPONSE=1 TSWS_LOG=${TSWS_LOG} /usr/bin/env bash $0"
+}
 
-  if [ -x "${_socat}" ]; then
-    local -r _bash=$(which bash)
-    "${_socat}" -dD \
-      "TCP-LISTEN:${port},bind=${host},fork" \
-      "SYSTEM:TSWS_RESPONSE=1 TSWS_LOG=${TSWS_LOG} /usr/bin/env bash $0"
-  elif [ -x "${_nc}" ]; then
-    # DEPRECATED nc mode.
-    # Initialize the FIFO pipe.
-    local -r fifo="$(mktemp -u)"
-    mkfifo -m 600 "${fifo}"
-    trap "[ -f \"${fifo}\" ] && rm \"${fifo}\"" EXIT INT TERM HUP # Cleanup.
-    # Connect tsws_response to STDIN. Connect STDOUT to FIFO pipe. Then listen
-    # on ${host}:${port}. nc -l is "listen" and -k is "listen forever".
-    "${_nc}" -kl "${host}" ${port} \
-      0< <(while : ; do tsws_response 0< "${fifo}"; done) \
-      1> >(while : ; do cat - > "${fifo}"; done) \
-      2>"${TSWS_LOG}" # Loop ^^ keeps pipe open.
-      # Send ^^ nc errors (2>) to the log.
-  else
-    printf $'\nCannot find "socat" or "nc", cannot continue.' >"${TSWS_LOG}"
-    exit 1
+# -----------------------------------------------------------------------------
+# tsws_install
+# -----------------------------------------------------------------------------
+#
+# Installation function. If socat is not found, this function is called which
+# attempts to resolve the situation.
+#
+function tsws_install {
+  local -r _apt=$(which apt-get 2>/dev/null)
+  local -r _yum=$(which yum 2>/dev/null)
+  [ -n "${_apt}" ] && local -r _pm="${_apt}" || local -r _pm="${_yum}"
+  if [ -n "${_pm}" ]; then
+    local yn="X"
+    while [ "${yn}" != "y" -a "${yn}" != "n" -a -n "${yn}" ]; do
+      printf $'\n' >"${TSWS_TTY}"
+      read -r -n1 -p "Socat is missing. Would you like to use the command \`sudo ${_pm} install socat\` to resolve this? [Y/n]: " yn <"${TSWS_TTY}" >"${TSWS_TTY}"
+      [ "${yn}" = "" ] && yn="y"
+      printf $'\n' >"${TSWS_TTY}"
+    done
+    if [ "${yn}" = "y" ]; then
+      echo "package manager! ${_pm}" >"${TSWS_TTY}"
+      if sudo "${_pm}" install socat; then
+        printf $'Successfully installed socat.\n' >"${TSWS_TTY}"
+        return 0
+      else
+        printf $'Could not install socat.\n' >"${TSWS_TTY}"
+        return 2
+      fi
+    fi
   fi
+  printf $'\nCannot find `socat`, please use your system package management tools to install.\n\n' >"${TSWS_TTY}"
+  return 1
 }
 
 # -----------------------------------------------------------------------------
