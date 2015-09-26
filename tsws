@@ -980,7 +980,7 @@ EOF
 
 if [ "${TSWS_RESPONSE:-0}" = "1" ]; then
   tsws_response
-  exit 0
+  exit $?
 fi
 declare host="${1:-127.0.0.1}"
 declare port="${2:-18080}"
