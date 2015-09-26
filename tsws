@@ -341,6 +341,7 @@ function tsws_response {
   local -A request_headers
   while read -r line; do
     [ "${line}" = $'\r' ] && break
+    line="$(sed 's/\r//g' <<< "${line}")"
     local name="$(sed 's/^\([^:]*\): [^$]*$/\1/g' <<< "${line}")"
     local value="$(sed 's/^[^:]*: \([^$]*\)$/\1/g' <<< "${line}")"
     request_headers["${name}"]="${value}"
